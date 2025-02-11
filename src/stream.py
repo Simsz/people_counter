@@ -1,11 +1,15 @@
 from flask import Flask, Response
 import cv2
 import time
+import os
 
 class CameraStream:
-    def __init__(self, camera_url):
+    def __init__(self, camera_url, detector=None):
         self.camera_url = camera_url
+        self.detector = detector
         self.app = Flask(__name__)
+        self.width = int(os.getenv('STREAM_WIDTH', '1280'))
+        self.height = int(os.getenv('STREAM_HEIGHT', '720'))
         self.setup_routes()
         
     def generate_frames(self):
@@ -23,6 +27,14 @@ class CameraStream:
                         print("Failed to read frame. Reconnecting...")
                         break
                         
+                    # Resize frame
+                    frame = cv2.resize(frame, (self.width, self.height))
+                    
+                    # Run detection if detector is available
+                    if self.detector:
+                        detections = self.detector.detect(frame)
+                        frame = self.detector.draw_detections(frame, detections)
+                    
                     ret, buffer = cv2.imencode('.jpg', frame)
                     if not ret:
                         print("Failed to encode frame. Skipping...")
