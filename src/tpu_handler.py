@@ -7,6 +7,8 @@ import threading
 import queue
 import time
 from PIL import Image, ImageOps
+import cv2
+import os
 
 class TPUHandler:
     def __init__(self, model_path):
@@ -40,18 +42,24 @@ class TPUHandler:
         if self.interpreter is None:
             raise RuntimeError("TPU not initialized")
 
-        # Convert frame to PIL Image
-        image = Image.fromarray(frame)
+        # Get original frame dimensions
+        original_height, original_width = frame.shape[:2]
         
-        # Prepare input
-        _, height, width, _ = self.input_details[0]['shape']
-        image = image.resize((width, height), Image.LANCZOS)
+        # Get model input shape (should be 300x300 for this model)
+        input_shape = self.input_details[0]['shape']
+        model_height, model_width = input_shape[1], input_shape[2]
+        
+        # Resize frame to model input size
+        frame_resized = cv2.resize(frame, (model_width, model_height))
+        
+        # Convert frame to PIL Image
+        image = Image.fromarray(frame_resized)
         
         # Convert to numpy array and ensure UINT8 type
         input_data = np.array(image, dtype=np.uint8)
         input_data = np.expand_dims(input_data, axis=0)
         
-        # Set the tensor directly without normalization
+        # Set the tensor
         self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
         self.interpreter.invoke()
 
@@ -65,15 +73,18 @@ class TPUHandler:
         for i in range(count):
             if scores[0][i] >= threshold:
                 box = boxes[0][i]
+                # Scale coordinates back to original frame size
                 detections.append({
                     'bbox': [
-                        int(box[1] * frame.shape[1]),  # xmin
-                        int(box[0] * frame.shape[0]),  # ymin
-                        int(box[3] * frame.shape[1]),  # xmax
-                        int(box[2] * frame.shape[0])   # ymax
+                        max(0, int(box[1] * original_width)),   # xmin
+                        max(0, int(box[0] * original_height)),  # ymin
+                        min(original_width, int(box[3] * original_width)),   # xmax
+                        min(original_height, int(box[2] * original_height))  # ymax
                     ],
                     'class': int(classes[0][i]),
                     'confidence': float(scores[0][i])
                 })
+                # Debug print
+                print(f"Detection {i}: bbox={detections[-1]['bbox']}, conf={scores[0][i]:.2f}")
 
         return detections 
