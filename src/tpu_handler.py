@@ -47,13 +47,11 @@ class TPUHandler:
         _, height, width, _ = self.input_details[0]['shape']
         image = image.resize((width, height), Image.LANCZOS)
         
-        # Normalize input
-        input_data = np.expand_dims(image, axis=0)
-        input_scale = self.input_details[0]['quantization'][0]
-        input_zero_point = self.input_details[0]['quantization'][1]
-        input_data = (input_data - input_zero_point) * input_scale
-
-        # Run inference
+        # Convert to numpy array and ensure UINT8 type
+        input_data = np.array(image, dtype=np.uint8)
+        input_data = np.expand_dims(input_data, axis=0)
+        
+        # Set the tensor directly without normalization
         self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
         self.interpreter.invoke()
 
