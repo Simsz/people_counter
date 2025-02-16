@@ -54,8 +54,8 @@ class CameraStream:
                 processed = self.counter.draw(processed)
                 
                 # Add FPS counter
-                cv2.putText(processed, f"FPS: {self.fps:.1f}", (10, 120),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(processed, f"FPS: {self.fps:.1f}", (10, 70),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
                 
                 with self.lock:
                     self.frame = frame

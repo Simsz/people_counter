@@ -17,6 +17,9 @@ class PersonDetector:
             history=300, varThreshold=20, detectShadows=False)
         self.min_motion_area = 800  # Increased for full-body detection
         self.last_frame = None
+        
+        # NMS parameters
+        self.nms_threshold = 0.3
         print(f"Initialized detector with model: {model_path}")
         
     def _detect_motion(self, frame):
@@ -46,10 +49,74 @@ class PersonDetector:
         return motion_regions
         
     def _bbox_overlap(self, bbox1, bbox2):
-        """Check if two bounding boxes overlap"""
+        """Calculate IoU between two bounding boxes"""
         x1, y1, x2, y2 = bbox1
         x3, y3, x4, y4 = bbox2
-        return not (x2 < x3 or x1 > x4 or y2 < y3 or y1 > y4)
+        
+        # Calculate intersection
+        x_left = max(x1, x3)
+        y_top = max(y1, y3)
+        x_right = min(x2, x4)
+        y_bottom = min(y2, y4)
+        
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+            
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        
+        # Calculate union
+        bbox1_area = (x2 - x1) * (y2 - y1)
+        bbox2_area = (x4 - x3) * (y4 - y3)
+        union_area = bbox1_area + bbox2_area - intersection_area
+        
+        # Calculate IoU
+        if union_area == 0:
+            return 0.0
+        return intersection_area / union_area
+        
+    def _apply_nms(self, detections):
+        """Apply Non-Maximum Suppression to remove overlapping detections"""
+        if not detections:
+            return []
+            
+        # Convert to numpy arrays for easier processing
+        boxes = np.array([[d['bbox'][0], d['bbox'][1], d['bbox'][2], d['bbox'][3]] for d in detections])
+        scores = np.array([d['confidence'] for d in detections])
+        
+        # Calculate areas
+        areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+        
+        # Sort by confidence
+        idxs = np.argsort(scores)
+        
+        # Initialize the list of picked indexes
+        pick = []
+        
+        while len(idxs) > 0:
+            # Pick the last index and add it to the list
+            last = len(idxs) - 1
+            i = idxs[last]
+            pick.append(i)
+            
+            # Find the intersection
+            xx1 = np.maximum(boxes[i, 0], boxes[idxs[:last], 0])
+            yy1 = np.maximum(boxes[i, 1], boxes[idxs[:last], 1])
+            xx2 = np.minimum(boxes[i, 2], boxes[idxs[:last], 2])
+            yy2 = np.minimum(boxes[i, 3], boxes[idxs[:last], 3])
+            
+            # Calculate intersection area
+            w = np.maximum(0, xx2 - xx1)
+            h = np.maximum(0, yy2 - yy1)
+            intersection = w * h
+            
+            # Calculate IoU
+            union = areas[i] + areas[idxs[:last]] - intersection
+            overlap = intersection / (union + 1e-6)
+            
+            # Delete all indexes from the index list that have high overlap
+            idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > self.nms_threshold)[0])))
+        
+        return [detections[i] for i in pick]
         
     def detect(self, frame):
         try:
@@ -68,7 +135,7 @@ class PersonDetector:
                     # Check if detection overlaps with any motion region
                     motion_validated = False
                     for motion_bbox in motion_regions:
-                        if self._bbox_overlap(bbox, motion_bbox):
+                        if self._bbox_overlap(bbox, motion_bbox) > 0.3:
                             motion_validated = True
                             break
                     
@@ -76,6 +143,9 @@ class PersonDetector:
                     if d['confidence'] > 0.6 or motion_validated:
                         d['bbox'] = bbox
                         person_detections.append(d)
+            
+            # Apply NMS to remove overlapping detections
+            person_detections = self._apply_nms(person_detections)
             
             # Update tracks
             tracks = self.tracker.update(frame, person_detections)

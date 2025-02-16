@@ -126,9 +126,9 @@ class LineCounter:
         
         # Draw counts
         total_out = self.counts["out_left"] + self.counts["out_right"]
-        cv2.putText(frame, f"IN: {self.counts['in']}", (10, 60), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(frame, f"OUT: {total_out}", (10, 90), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(frame, f"IN: {self.counts['in']}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+        cv2.putText(frame, f"OUT: {total_out}", (10, 50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
         
         return frame 
