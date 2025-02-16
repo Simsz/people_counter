@@ -1,4 +1,5 @@
 import cv2
+import numpy as np
 from .tpu_handler import TPUHandler
 from .tracker import PersonTracker
 import logging
@@ -7,47 +8,96 @@ import logging
 class PersonDetector:
     def __init__(self, model_path):
         self.tpu = TPUHandler(model_path)
-        self.confidence_threshold = 0.35
-        self.person_class_id = 0  # Changed back to 0 for this model
-        self.tracker = PersonTracker(max_disappeared=30, min_confidence=0.7)
+        self.confidence_threshold = 0.30  # Lowered for better detection in darker areas
+        self.person_class_id = 0
+        self.tracker = PersonTracker(max_disappeared=20, min_confidence=0.6)
+        
+        # Motion detection
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=300, varThreshold=20, detectShadows=False)
+        self.min_motion_area = 800  # Increased for full-body detection
+        self.last_frame = None
         print(f"Initialized detector with model: {model_path}")
+        
+    def _detect_motion(self, frame):
+        """Detect areas of motion in the frame"""
+        # Apply background subtraction
+        fg_mask = self.bg_subtractor.apply(frame)
+        
+        # Remove shadows
+        _, fg_mask = cv2.threshold(fg_mask, 244, 255, cv2.THRESH_BINARY)
+        
+        # Noise removal
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Find contours
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours by area
+        motion_regions = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area > self.min_motion_area:
+                x, y, w, h = cv2.boundingRect(contour)
+                motion_regions.append((x, y, x + w, y + h))
+        
+        return motion_regions
+        
+    def _bbox_overlap(self, bbox1, bbox2):
+        """Check if two bounding boxes overlap"""
+        x1, y1, x2, y2 = bbox1
+        x3, y3, x4, y4 = bbox2
+        return not (x2 < x3 or x1 > x4 or y2 < y3 or y1 > y4)
         
     def detect(self, frame):
         try:
-            detections = self.tpu.process_frame(frame, threshold=self.confidence_threshold)
-            # Debug print
-            print(f"Raw detections: {detections}")
+            # Detect motion regions
+            motion_regions = self._detect_motion(frame)
             
-            # Filter for person class only and ensure bbox format
+            # Get detections from TPU
+            detections = self.tpu.process_frame(frame, threshold=self.confidence_threshold)
+            
+            # Filter for person class and validate against motion
             person_detections = []
             for d in detections:
-                # Print class information for debugging
-                print(f"Detection class: {d['class']}, confidence: {d['confidence']}")
-                
                 if d['class'] == self.person_class_id:
-                    # Ensure bbox values are integers
-                    d['bbox'] = [int(x) for x in d['bbox']]
-                    person_detections.append(d)
-            
-            # Debug print
-            print(f"Person detections: {person_detections}")
+                    bbox = [int(x) for x in d['bbox']]
+                    
+                    # Check if detection overlaps with any motion region
+                    motion_validated = False
+                    for motion_bbox in motion_regions:
+                        if self._bbox_overlap(bbox, motion_bbox):
+                            motion_validated = True
+                            break
+                    
+                    # Accept detection if it's high confidence or motion validated
+                    if d['confidence'] > 0.6 or motion_validated:
+                        d['bbox'] = bbox
+                        person_detections.append(d)
             
             # Update tracks
             tracks = self.tracker.update(frame, person_detections)
-            return person_detections, tracks
+            return person_detections, tracks, motion_regions
             
         except Exception as e:
             print(f"Detection error: {str(e)}")
             import traceback
             traceback.print_exc()
-            return [], {}
+            return [], {}, []
         
     def draw_detections(self, frame, detection_data):
         try:
-            detections, tracks = detection_data
+            detections, tracks, motion_regions = detection_data
             height, width = frame.shape[:2]
             
-            # First draw detections with confidence-based colors
+            # Draw motion regions
+            for region in motion_regions:
+                x1, y1, x2, y2 = region
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
+            
+            # Draw detections
             for det in detections:
                 try:
                     xmin, ymin, xmax, ymax = det['bbox']
@@ -61,33 +111,29 @@ class PersonDetector:
                     else:
                         color = (0, 165, 255)  # Orange
                     
-                    # Draw thinner box for detections
                     cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 1)
-                    
-                    # Add small confidence label
                     label = f"{confidence:.2f}"
-                    (w_text, h_text), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                     cv2.putText(frame, label, (xmin, ymin-5), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                     
                 except Exception as e:
                     print(f"Error drawing detection: {str(e)}")
                     continue
             
-            # Then draw tracked objects with bold green boxes
+            # Draw tracked objects
             for track_id, track in tracks.items():
                 try:
                     x, y, w, h = [int(v) for v in track['bbox']]
-                    
-                    # Draw bold green box for tracking
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(frame, str(track_id), (x, y-10), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     
                 except Exception as e:
                     print(f"Error drawing track {track_id}: {str(e)}")
                     continue
             
-            # Add stats overlay with semi-transparent background
-            stats = f"Tracked Objects: {len(tracks)} | Detections: {len(detections)}"
+            # Add stats overlay
+            stats = f"Tracked: {len(tracks)} | Detections: {len(detections)}"
             overlay = frame.copy()
             cv2.rectangle(overlay, (0, 0), (width, 40), (0, 0, 0), -1)
             cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
@@ -98,6 +144,4 @@ class PersonDetector:
             
         except Exception as e:
             print(f"Drawing error: {str(e)}")
-            import traceback
-            traceback.print_exc()
             return frame 

@@ -4,86 +4,86 @@ import time
 import os
 from datetime import datetime
 from .detector import PersonDetector
+import threading
+import numpy as np
 
 class CameraStream:
-    def __init__(self, camera_url, detector=None):
+    def __init__(self, camera_url, detector, counter):
         self.camera_url = camera_url
         self.detector = detector
+        self.counter = counter
+        self.frame = None
+        self.processed_frame = None
+        self.last_frame_time = 0
+        self.fps = 0
+        self.running = False
+        self.lock = threading.Lock()
         self.app = Flask(__name__)
         self.width = int(os.getenv('STREAM_WIDTH', '1280'))
         self.height = int(os.getenv('STREAM_HEIGHT', '720'))
-        self.fps = 0
-        self.last_fps_time = time.time()
-        self.frame_count = 0
         self.setup_routes()
         
-    def generate_frames(self):
-        while True:
+    def capture_frames(self):
+        cap = cv2.VideoCapture(self.camera_url)
+        self.running = True
+        
+        while self.running:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error reading frame")
+                time.sleep(1)
+                continue
+                
+            # Calculate FPS
+            current_time = time.time()
+            if self.last_frame_time != 0:
+                self.fps = 1 / (current_time - self.last_frame_time)
+            self.last_frame_time = current_time
+            
+            # Process frame
             try:
-                print("Attempting to connect to camera...")
-                cap = cv2.VideoCapture(self.camera_url)
+                # Run detection and tracking
+                detection_data = self.detector.detect(frame)
                 
-                if not cap.isOpened():
-                    print("Failed to open camera. Retrying...")
-                    time.sleep(5)
-                    continue
+                # Update counter
+                self.counter.update(detection_data[1])  # Pass tracks to counter
                 
-                while True:
-                    start_time = time.time()
-                    ret, frame = cap.read()
-                    if not ret:
-                        print("Failed to read frame. Reconnecting...")
-                        break
-                    
-                    # Calculate FPS
-                    self.frame_count += 1
-                    if time.time() - self.last_fps_time > 1.0:
-                        self.fps = self.frame_count
-                        self.frame_count = 0
-                        self.last_fps_time = time.time()
-                    
-                    # Resize frame
-                    frame = cv2.resize(frame, (self.width, self.height))
-                    
-                    # Run detection
-                    if self.detector:
-                        try:
-                            detections, tracks = self.detector.detect(frame)
-                            frame = self.detector.draw_detections(frame, (detections, tracks))
-                            
-                            # Add performance overlay
-                            process_time = time.time() - start_time
-                            cv2.putText(frame, f'FPS: {self.fps}', (10, 70), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                            cv2.putText(frame, f'Process Time: {process_time:.3f}s', (10, 110), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                            
-                            # Log detections
-                            if len(detections) > 0:
-                                print(f"[{datetime.now()}] Detected {len(detections)} people")
-                                
-                        except Exception as e:
-                            print(f"Detection error: {str(e)}")
-                            import traceback
-                            traceback.print_exc()
-                    
-                    ret, buffer = cv2.imencode('.jpg', frame)
-                    if not ret:
-                        print("Failed to encode frame. Skipping...")
-                        continue
-                    
-                    frame = buffer.tobytes()
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                # Draw visualizations
+                processed = frame.copy()
+                processed = self.detector.draw_detections(processed, detection_data)
+                processed = self.counter.draw(processed)
+                
+                # Add FPS counter
+                cv2.putText(processed, f"FPS: {self.fps:.1f}", (10, 120),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+                with self.lock:
+                    self.frame = frame
+                    self.processed_frame = processed
                     
             except Exception as e:
-                print(f"Stream error: {str(e)}. Reconnecting...")
-                time.sleep(5)
+                print(f"Error processing frame: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 
-            finally:
-                if 'cap' in locals():
-                    cap.release()
-
+        cap.release()
+        
+    def get_frame(self):
+        while True:
+            with self.lock:
+                if self.processed_frame is None:
+                    continue
+                    
+                # Encode frame
+                _, buffer = cv2.imencode('.jpg', self.processed_frame)
+                frame_bytes = buffer.tobytes()
+                
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            
+            # Control frame rate
+            time.sleep(0.03)  # ~30 FPS
+            
     def setup_routes(self):
         def get_available_models():
             models_dir = 'models'
@@ -307,8 +307,8 @@ class CameraStream:
             <body>
                 <div class="container">
                     <header>
-                        <h1>People Counter</h1>
-                        <p class="subtitle">AI-Powered People Detection</p>
+                        <h1>Is it poppin' ?</h1>
+                        <p class="subtitle">TensorFlow Powered Person Counter</p>
                     </header>
                     
                     <div class="stream-container">
@@ -351,8 +351,17 @@ class CameraStream:
 
         @self.app.route('/video_feed')
         def video_feed():
-            return Response(self.generate_frames(),
+            return Response(self.get_frame(),
                           mimetype='multipart/x-mixed-replace; boundary=frame')
 
     def run(self, host='0.0.0.0', port=5000):
-        self.app.run(host=host, port=port) 
+        # Start capture thread
+        thread = threading.Thread(target=self.capture_frames)
+        thread.daemon = True
+        thread.start()
+        
+        # Run Flask app
+        self.app.run(host=host, port=port)
+
+    def __del__(self):
+        self.running = False 
