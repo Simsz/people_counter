@@ -70,42 +70,47 @@ class LineCounter:
         Returns: Updated counts dictionary
         """
         for track_id, track_info in tracks.items():
-            bbox = track_info['bbox']
-            # Get center point of bbox bottom
-            current_pos = np.array([bbox[0] + bbox[2]//2, bbox[1] + bbox[3]])
-            
-            track_data = self.tracked_crossings[track_id]
-            last_pos = track_data["last_pos"]
-            current_zone = None
-            
-            # Determine current zone
-            if self._point_in_polygon(current_pos, self.zone_points["center"]):
-                current_zone = "center"
-            elif self._point_in_polygon(current_pos, self.zone_points["left"]):
-                current_zone = "left"
-            elif self._point_in_polygon(current_pos, self.zone_points["right"]):
-                current_zone = "right"
-            
-            if last_pos is not None and not track_data["counted"]:
-                # Check for zone transitions
-                if track_data["zone"] == "center":
-                    if current_zone == "left":
-                        self.counts["out_left"] += 1
+            try:
+                bbox = track_info['bbox']
+                # Get center point of bbox bottom
+                current_pos = (int(bbox[0] + bbox[2]//2), int(bbox[1] + bbox[3]))  # Convert to tuple of ints
+                
+                track_data = self.tracked_crossings[track_id]
+                last_pos = track_data["last_pos"]
+                current_zone = None
+                
+                # Determine current zone
+                if self._point_in_polygon(current_pos, self.zone_points["center"]):
+                    current_zone = "center"
+                elif self._point_in_polygon(current_pos, self.zone_points["left"]):
+                    current_zone = "left"
+                elif self._point_in_polygon(current_pos, self.zone_points["right"]):
+                    current_zone = "right"
+                
+                if last_pos is not None and not track_data["counted"]:
+                    # Check for zone transitions
+                    if track_data["zone"] == "center":
+                        if current_zone == "left":
+                            self.counts["out_left"] += 1
+                            track_data["counted"] = True
+                        elif current_zone == "right":
+                            self.counts["out_right"] += 1
+                            track_data["counted"] = True
+                    elif (track_data["zone"] == "left" or track_data["zone"] == "right") and current_zone == "center":
+                        self.counts["in"] += 1
                         track_data["counted"] = True
-                    elif current_zone == "right":
-                        self.counts["out_right"] += 1
-                        track_data["counted"] = True
-                elif (track_data["zone"] == "left" or track_data["zone"] == "right") and current_zone == "center":
-                    self.counts["in"] += 1
-                    track_data["counted"] = True
-            
-            # Update tracking data
-            track_data["last_pos"] = current_pos
-            track_data["zone"] = current_zone
-            
-            # Reset counted flag if person moves back to original zone
-            if current_zone != track_data["zone"]:
-                track_data["counted"] = False
+                
+                # Update tracking data
+                track_data["last_pos"] = current_pos
+                track_data["zone"] = current_zone
+                
+                # Reset counted flag if person moves back to original zone
+                if current_zone != track_data["zone"]:
+                    track_data["counted"] = False
+                    
+            except Exception as e:
+                print(f"Error processing track {track_id}: {str(e)}")
+                continue
         
         return self.counts
     

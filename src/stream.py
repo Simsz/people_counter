@@ -21,6 +21,17 @@ class CameraStream:
         self.app = Flask(__name__)
         self.width = int(os.getenv('STREAM_WIDTH', '1280'))
         self.height = int(os.getenv('STREAM_HEIGHT', '720'))
+        
+        # Frame rate control
+        self.target_fps = 18  # Match camera's FPS
+        self.frame_interval = 1.0 / self.target_fps
+        self.last_capture_time = 0
+        
+        # FPS calculation
+        self.fps_update_interval = 1.0  # Update FPS every second
+        self.frame_count = 0
+        self.fps_last_update = time.time()
+        
         self.setup_routes()
         
     def capture_frames(self):
@@ -28,17 +39,27 @@ class CameraStream:
         self.running = True
         
         while self.running:
+            current_time = time.time()
+            
+            # Control frame rate
+            if current_time - self.last_capture_time < self.frame_interval:
+                time.sleep(0.001)  # Small sleep to prevent CPU spinning
+                continue
+                
             ret, frame = cap.read()
             if not ret:
                 print("Error reading frame")
                 time.sleep(1)
                 continue
-                
-            # Calculate FPS
-            current_time = time.time()
-            if self.last_frame_time != 0:
-                self.fps = 1 / (current_time - self.last_frame_time)
-            self.last_frame_time = current_time
+            
+            self.last_capture_time = current_time
+            
+            # Update FPS calculation
+            self.frame_count += 1
+            if current_time - self.fps_last_update >= self.fps_update_interval:
+                self.fps = self.frame_count / (current_time - self.fps_last_update)
+                self.frame_count = 0
+                self.fps_last_update = current_time
             
             # Process frame
             try:
@@ -54,7 +75,7 @@ class CameraStream:
                 processed = self.counter.draw(processed)
                 
                 # Add FPS counter
-                cv2.putText(processed, f"FPS: {self.fps:.1f}", (10, 70),
+                cv2.putText(processed, f"FPS: {self.fps:.1f}/{self.target_fps}", (10, 70),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
                 
                 with self.lock:
@@ -81,8 +102,8 @@ class CameraStream:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
-            # Control frame rate
-            time.sleep(0.03)  # ~30 FPS
+            # Match streaming rate to capture rate
+            time.sleep(self.frame_interval)
             
     def setup_routes(self):
         def get_available_models():
